@@ -28,12 +28,12 @@ jobs:
     steps:
       - uses: actions/checkout@v2
         with:
-          path: ws/src
+          path: ws/src/ixblue_ins_stdbin_driver
 
       - uses: actions/checkout@v2
         with:
           repository: ixblue/ixblue_stdbin_decoder
-          path: ws/src
+          path: ws/src/ixblue_stdbin_decoder
 
       - name: Install dependencies
         run: |
