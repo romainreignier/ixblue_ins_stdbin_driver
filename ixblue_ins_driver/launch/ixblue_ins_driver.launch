@@ -6,6 +6,8 @@
 	<arg name="ip" default="0.0.0.0"/>
 	<arg name="time_source" default="ins"/>
 	<arg name="time_origin" default="unix"/>
+	<arg name="tf_ned_to_enu" default="false"/>
+	<arg name="use_compensated_acceleration" default="true"/>
 
 	<node pkg="ixblue_ins_driver" type="node" name="ixblue_ins_driver" output="screen">
 		<param name="frame_id" value="$(arg frame_id)"/>
@@ -13,5 +15,7 @@
 		<param name="ip" value="$(arg ip)"/>
 		<param name="time_source" value="$(arg time_source)"/>
 		<param name="time_origin" value="$(arg time_origin)"/>
+		<param name="tf_ned_to_enu" value="$(arg tf_ned_to_enu)"/>
+		<param name="use_compensated_acceleration" value="$(arg use_compensated_acceleration)"/>
 	</node>
 </launch>

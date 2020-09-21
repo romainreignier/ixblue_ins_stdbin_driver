@@ -16,7 +16,7 @@ public:
                          const ixblue_stdbin_decoder::Data::NavHeader& headerData);
 
     // Standard ros msgs
-    static sensor_msgs::ImuPtr toImuMsg(const ixblue_stdbin_decoder::Data::BinaryNav& navData);
+    static sensor_msgs::ImuPtr toImuMsg(const ixblue_stdbin_decoder::Data::BinaryNav& navData, bool tf_ned_to_enu, bool use_compensated_acceleration);
     static sensor_msgs::NavSatFixPtr
     toNavSatFixMsg(const ixblue_stdbin_decoder::Data::BinaryNav& navData);
     static sensor_msgs::TimeReferencePtr
@@ -34,6 +34,8 @@ protected:
     std::string frame_id;
     std::string time_source;
     std::string time_origin;
+    bool tf_ned_to_enu = false;
+    bool use_compensated_acceleration = false;
 
     // Publishers
     ros::Publisher stdImuPublisher;

@@ -3,14 +3,18 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <cmath>
 #include <ros/node_handle.h>
+#include <tf2/utils.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 ROSPublisher::ROSPublisher()
 {
     ros::NodeHandle nh("~");
 
-    nh.param("frame_id", frame_id, std::string("ins"));
+    nh.param("frame_id", frame_id, std::string("imu_link"));
     nh.param("time_source", time_source, std::string("ins"));
     nh.param("time_origin", time_origin, std::string("unix"));
+    nh.param<bool>("tf_ned_to_enu", tf_ned_to_enu, false);
+    nh.param<bool>("use_compensated_acceleration", use_compensated_acceleration, true);
 
     if(time_source == std::string("ros"))
     {
@@ -19,8 +23,7 @@ ROSPublisher::ROSPublisher()
     else if(time_source != std::string("ins"))
     {
         ROS_WARN("This timestamp source is not available. You can use ins or ros. By "
-                 "default we "
-                 "replace your value by ins.");
+                 "default we replace your value by ins.");
         time_source = std::string("ins");
     }
 
@@ -31,8 +34,7 @@ ROSPublisher::ROSPublisher()
     else if(time_origin != std::string("unix"))
     {
         ROS_WARN("This timestamp origin is not available. You can use unix or "
-                 "sensor_default. By default we "
-                 "replace your value by unix.");
+                 "sensor_default. By default we replace your value by unix.");
         time_origin = std::string("unix");
     }
 
@@ -41,6 +43,8 @@ ROSPublisher::ROSPublisher()
     ROS_INFO("Timestamp register in the header will come from : %s", time_source.c_str());
     ROS_INFO("Timestamp register in the header will be in the base time of : %s",
              time_origin.c_str());
+    ROS_INFO("Transform NED to ENU frame : %s", tf_ned_to_enu ? "true" : "false");
+    ROS_INFO("Use compensated acceleration : %s", use_compensated_acceleration ? "true" : "false");
 
     stdImuPublisher = nh.advertise<sensor_msgs::Imu>("standard/imu", 1);
     stdNavSatFixPublisher = nh.advertise<sensor_msgs::NavSatFix>("standard/navsatfix", 1);
@@ -53,8 +57,17 @@ void ROSPublisher::onNewStdBinData(const ixblue_stdbin_decoder::Data::BinaryNav&
                                    const ixblue_stdbin_decoder::Data::NavHeader& headerData)
 {
     auto headerMsg = getHeader(headerData, navData);
-
-    auto imuMsg = toImuMsg(navData);
+    /*
+    if(navData.insAlgorithmStatus.is_initialized())
+    {
+        // Check Navigation bit
+        if(!(navData.insAlgorithmStatus->status1 & 1))
+        {
+            return;
+        }
+    }
+*/
+    auto imuMsg = toImuMsg(navData, tf_ned_to_enu, use_compensated_acceleration);
     auto navsatfixMsg = toNavSatFixMsg(navData);
     auto iXinsMsg = toiXInsMsg(navData);
 
@@ -93,7 +106,14 @@ std_msgs::Header ROSPublisher::getHeader(const ixblue_stdbin_decoder::Data::NavH
     std_msgs::Header res;
 
     // --- Frame ID
-    res.frame_id = frame_id;
+    if(tf_ned_to_enu)
+    {
+        res.frame_id = frame_id;
+    }
+    else
+    {
+        res.frame_id = frame_id + std::string("_ned");
+    }
 
     // --- Timestamp
     if(useInsAsTimeReference)
@@ -135,13 +155,15 @@ std_msgs::Header ROSPublisher::getHeader(const ixblue_stdbin_decoder::Data::NavH
     return res;
 }
 
-sensor_msgs::ImuPtr ROSPublisher::toImuMsg(const ixblue_stdbin_decoder::Data::BinaryNav& navData)
+sensor_msgs::ImuPtr ROSPublisher::toImuMsg(const ixblue_stdbin_decoder::Data::BinaryNav& navData,
+    bool tf_ned_to_enu, bool use_compensated_acceleration)
 {
 
     // --- Check if there are enough data to send the message
-    if(navData.rotationRateVesselFrame.is_initialized() == false ||
-       navData.attitudeQuaternion.is_initialized() == false ||
-       navData.accelerationVesselFrame.is_initialized() == false)
+    if(!navData.rotationRateVesselFrame.is_initialized() ||
+       !navData.attitudeQuaternion.is_initialized() ||
+       (use_compensated_acceleration && !navData.accelerationVesselFrame.is_initialized()) ||
+       (!use_compensated_acceleration && !navData.rawAccelerationVesselFrame.is_initialized()))
     {
         return nullptr;
     }
@@ -150,10 +172,27 @@ sensor_msgs::ImuPtr ROSPublisher::toImuMsg(const ixblue_stdbin_decoder::Data::Bi
     sensor_msgs::ImuPtr res = boost::make_shared<sensor_msgs::Imu>();
 
     // --- Orientation
-    res->orientation.x = navData.attitudeQuaternion.get().q0;
-    res->orientation.y = navData.attitudeQuaternion.get().q1;
-    res->orientation.z = navData.attitudeQuaternion.get().q2;
-    res->orientation.w = navData.attitudeQuaternion.get().q3;
+    if(tf_ned_to_enu)
+    {
+        // NED to ENU convertion
+        res->orientation.x = navData.attitudeQuaternion.get().q1;
+        res->orientation.y = -navData.attitudeQuaternion.get().q2;
+        res->orientation.z = -navData.attitudeQuaternion.get().q3;
+        res->orientation.w = navData.attitudeQuaternion.get().q0;
+
+        tf2::Quaternion a;
+        tf2::fromMsg(res->orientation, a);
+        const tf2::Quaternion q1 { { 0, 0, 1 }, -M_PI_2 };
+        tf2::Quaternion out = a * q1;
+        res->orientation = tf2::toMsg(out);
+    }
+    else
+    {
+        res->orientation.x = navData.attitudeQuaternion.get().q1;
+        res->orientation.y = navData.attitudeQuaternion.get().q2;
+        res->orientation.z = navData.attitudeQuaternion.get().q3;
+        res->orientation.w = navData.attitudeQuaternion.get().q0;
+    }
 
     // --- Orientation SD
     if(navData.attitudeQuaternionDeviation.is_initialized() == false)
@@ -179,12 +218,15 @@ sensor_msgs::ImuPtr ROSPublisher::toImuMsg(const ixblue_stdbin_decoder::Data::Bi
 
     // --- Angular Velocity
     // According to the ros standard, the angular velocity must be in rad/sec
-    res->angular_velocity.x =
-        navData.rotationRateVesselFrame.get().xv1_degsec * M_PI / 180.;
-    res->angular_velocity.y =
-        navData.rotationRateVesselFrame.get().xv2_degsec * M_PI / 180.;
-    res->angular_velocity.z =
-        navData.rotationRateVesselFrame.get().xv3_degsec * M_PI / 180.;
+    res->angular_velocity.x = navData.rotationRateVesselFrame.get().xv1_degsec * M_PI / 180.;
+    res->angular_velocity.y = navData.rotationRateVesselFrame.get().xv2_degsec * M_PI / 180.;
+    res->angular_velocity.z = navData.rotationRateVesselFrame.get().xv3_degsec * M_PI / 180.;
+
+    if (tf_ned_to_enu)
+    {
+        res->angular_velocity.y *= -1.0;
+        res->angular_velocity.z *= -1.0;
+    }
 
     // --- Angular Velocity SD
     if(navData.rotationRateVesselFrameDeviation.is_initialized() == false)
@@ -215,9 +257,18 @@ sensor_msgs::ImuPtr ROSPublisher::toImuMsg(const ixblue_stdbin_decoder::Data::Bi
     }
 
     // --- Linear Acceleration
-    res->linear_acceleration.x = navData.accelerationVesselFrame.get().xv1_msec2;
-    res->linear_acceleration.y = navData.accelerationVesselFrame.get().xv2_msec2;
-    res->linear_acceleration.z = navData.accelerationVesselFrame.get().xv3_msec2;
+    if(use_compensated_acceleration)
+    {
+        res->linear_acceleration.x = navData.accelerationVesselFrame.get().xv1_msec2;
+        res->linear_acceleration.y = navData.accelerationVesselFrame.get().xv2_msec2;
+        res->linear_acceleration.z = navData.accelerationVesselFrame.get().xv3_msec2;
+    }
+    else
+    {
+        res->linear_acceleration.x = navData.rawAccelerationVesselFrame.get().xv1_msec2;
+        res->linear_acceleration.y = navData.rawAccelerationVesselFrame.get().xv2_msec2;
+        res->linear_acceleration.z = navData.rawAccelerationVesselFrame.get().xv3_msec2;
+    }
 
     // --- Linear Acceleration SD
     if(navData.accelerationVesselFrameDeviation.is_initialized() == false)
